@@ -158,7 +158,7 @@ public class AccountManagerImpl implements AccountManager {
 						"You can't transfer $" + amount + ". Your balance is $" + availBal);
 			} else {
 				// Check toAccount exists in DB. Put accoutnumber, balance in map.
-				Map<String, Double> allAccounts = new ConcurrentHashMap<String, Double>();
+				Map<String, Double> allAccounts = new ConcurrentHashMap<>();
 				String getAllAccount = "select ActNum, balance from Account";
 				preparedStmt = conn.prepareStatement(getAllAccount);
 				ResultSet rs = preparedStmt.executeQuery();

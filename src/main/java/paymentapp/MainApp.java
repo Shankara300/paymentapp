@@ -28,7 +28,7 @@ public class MainApp {
 		try {
 			new TransactionOptions().ListingActions(conn);
 		} catch (AccountCreationPasswordException e) {
-			e.printStackTrace();
+			System.out.println(e.getMessage());
 		}
 	}
 }

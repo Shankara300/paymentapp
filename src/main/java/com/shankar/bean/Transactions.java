@@ -22,7 +22,7 @@ public class Transactions {
 	}
 
 	public enum TxnStatus {
-		Pending, Failed, Success
+		Pending, Failed, Success, ReversedSuccess,ReversedFailure
 	}
 
 	@Override

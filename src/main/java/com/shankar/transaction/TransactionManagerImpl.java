@@ -7,10 +7,15 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
+import com.shankar.account.ChargeAndCommissionCal;
 import com.shankar.bean.Account;
 import com.shankar.bean.Transactions;
 import com.shankar.bean.Transactions.TxnStatus;
@@ -62,7 +67,7 @@ public class TransactionManagerImpl implements TransactionManager {
 	}
 
 	/**
-	 * This method
+	 * This method records the transaction when user adds money to his account.
 	 * 
 	 * @param conn
 	 * @param accountNumber
@@ -148,7 +153,7 @@ public class TransactionManagerImpl implements TransactionManager {
 	 * @param accountNumber
 	 */
 	public static void getStatement(Connection conn, String accountNumber) {
-		Map<String, List<String>> myMaps = new TreeMap<String, List<String>>();
+		Map<String, List<String>> myMaps = new HashMap<>();
 		String query = "Select TxnNum, FromActNum, ToActNum, Amount, TxnStatus, TxnTime from Transactions where "
 				+ "FromActNum = ? or ToActNum = ?";
 		try {
@@ -157,7 +162,7 @@ public class TransactionManagerImpl implements TransactionManager {
 			preparedStmt.setString(2, accountNumber);
 			ResultSet results = preparedStmt.executeQuery();
 			while (results.next()) {
-				ArrayList<String> list = new ArrayList<String>();
+				ArrayList<String> list = new ArrayList<>();
 				list.add(results.getString("FromActNum"));
 				list.add(results.getString("ToActNum"));
 				list.add(String.valueOf(results.getDouble("Amount")));
@@ -168,56 +173,156 @@ public class TransactionManagerImpl implements TransactionManager {
 		} catch (SQLException e) {
 			System.out.println("Transaction failed");
 		}
-		System.out.println("---------------------------------------------------------------------------------------------");
+		System.out.println(
+				"---------------------------------------------------------------------------------------------");
 		System.out.println("Txn Id           |From Account Num  | To Account Number| Amount| Txn Status| Txn Time");
-		System.out.println("---------------------------------------------------------------------------------------------");
+		System.out.println(
+				"---------------------------------------------------------------------------------------------");
 		for (Map.Entry<String, List<String>> map : myMaps.entrySet()) {
 			List<String> details = map.getValue();
 			System.out.println(map.getKey() + "| " + details.get(0) + "| " + details.get(1) + "| " + details.get(2)
 					+ "| " + details.get(3) + "| " + details.get(4));
 		}
-		System.out.println("----------------------------------------------------------------------------------------------");
+		System.out.println(
+				"----------------------------------------------------------------------------------------------");
 	}
 
 	/**
-	 * This method is used to reverse the transaction. It deletes the rows from Transactions table and reverts the
-	 *  amount in Accounts table.
+	 * This method is used to reverse the transaction. It deletes the rows from
+	 * Transactions table and reverts the amount in Accounts table. A transaction
+	 * can be reversed only if money is transfered from one account to other.
+	 * 
 	 * @param conn
 	 * @param txnId
 	 */
 	public static void reverseTransaction(Connection conn, String txnId) {
-		// First delete the entry from ChargeAndCommission if any, since it's reffering Transactions table
-		String query = "delete from ChargeAndCommission where TxnNum = ?";
+
+		double amountToReverse = 0;
+		String fromAccountNum = null;
+		String toAccountNum = null;
+		String query1 = "select FromActNum, ToActNum, Amount from Transactions where TxnNum = ?";
 		try {
-			preparedStmt = conn.prepareStatement(query);
+			preparedStmt = conn.prepareStatement(query1);
 			preparedStmt.setString(1, txnId);
-			preparedStmt.executeUpdate();
-		} catch(SQLException e) {
-			
+			ResultSet results = preparedStmt.executeQuery();
+			while (results.next()) {
+				amountToReverse = results.getDouble("Amount");
+				fromAccountNum = results.getString("FromActNum");
+				toAccountNum = results.getString("ToActNum");
+				if (fromAccountNum.equals(toAccountNum)) {
+					System.out.println("This transaction was self added. Reverting back not possible");
+					return;
+				}
+			}
+		} catch (SQLException e) {
 		}
-		
-		// now get the amount from Transactions table
-		double amount = 0;
-		String query2 = "select Amount from Transactions where TxnNum = ?";
+
+		// First delete the entry from ChargeAndCommission if any, since it's reffering
+		// Transactions table
+		String query2 = "delete from ChargeAndCommission where TxnNum = ?";
 		try {
 			preparedStmt = conn.prepareStatement(query2);
 			preparedStmt.setString(1, txnId);
-			ResultSet results = preparedStmt.executeQuery();
-			if (results.next()) {
-				amount = results.getDouble(0);
-				System.out.println(amount);
-			}
-		} catch(SQLException e) {
+			preparedStmt.executeUpdate();
+		} catch (SQLException e) {
+
+		}
+
+		// Delete TxnId from Transactions
+		String query3 = "delete from Transactions where TxnNum = ?";
+		try {
+			preparedStmt = conn.prepareStatement(query3);
+			preparedStmt.setString(1, txnId);
+			preparedStmt.executeUpdate();
+		} catch (SQLException e) {
+
+		}
+
+		String TxnId = null;
+		TransactionManagerImpl tm = new TransactionManagerImpl();
+		try {
+			TxnId = tm.removeMoneyFromAccount(conn, fromAccountNum, toAccountNum, amountToReverse);
+		} catch (SQLException e) {
+			// TODO Auto-generated catch block
+			return;
 		}
 		
-		// add the amout back to senders account and deduct from recievers account.
+		// First, get the current balances of both accounts.
+		String query = "select ActNum, balance from Account";
+		Map<String, Double> allAccounts = new ConcurrentHashMap<String, Double>();
+		try {
+			preparedStmt = conn.prepareStatement(query);
+			ResultSet rs = preparedStmt.executeQuery();
+			while (rs.next()) {
+				allAccounts.put(rs.getString("ActNum"), rs.getDouble("balance"));
+			}
+		} catch (SQLException e1) {
+			// TODO Auto-generated catch block
+			e1.printStackTrace();
+		}
 		
+		double fromBalance = allAccounts.get(fromAccountNum);
+		double toBalance = allAccounts.get(toAccountNum);
+		double fromAmount = amountToReverse - ChargeAndCommissionCal.findChargeAndCommissionAmount(amountToReverse);
+
+		fromBalance = fromAmount + fromBalance;
+		toBalance = toBalance - amountToReverse;
+		// Update fromAccountNum with fromAmount value and and toAccountNum with amount.
+		String fromAccountUpdate = "update Account set balance = ? , lastupdatedon = ? where ActNum =?";
+		Timestamp tstamp = new Timestamp(new Date().getTime());
+		Lock queuelock = new ReentrantLock();
+		queuelock.lock();
+		int execute1 = 0, execute2 = 0;
+		try {
+			preparedStmt = conn.prepareStatement(fromAccountUpdate);
+			preparedStmt.setDouble(1, fromBalance);
+			preparedStmt.setTimestamp(2, tstamp);
+			preparedStmt.setString(3, fromAccountNum);
+			execute1 = preparedStmt.executeUpdate();
+		} catch (SQLException e) {
+
+		}
+
+		String toAccountUpdate = "update Account set balance = ? , lastupdatedon = ? where ActNum =?";
+		try {
+			preparedStmt = conn.prepareStatement(toAccountUpdate);
+			preparedStmt.setDouble(1, toBalance);
+			preparedStmt.setTimestamp(2, tstamp);
+			preparedStmt.setString(3, toAccountNum);
+			execute2 = preparedStmt.executeUpdate();
+		} catch (SQLException e) {
+
+		}
+
+		if (execute1 > 0 && execute2 > 0)
+			try {
+				tm.changeStatusofTxn(conn, TxnId, TxnStatus.ReversedSuccess);
+			} catch (SQLException e) {
+
+			}
+		else {
+			try {
+				tm.changeStatusofTxn(conn, TxnId, TxnStatus.ReversedFailure);
+			} catch (SQLException e) {
+
+			}
+		}
+
+		queuelock.unlock();
+		System.out.println("Transaction has been reversed.");
+		System.out.println(
+				"Amount $" + amountToReverse + " got debited from your account " + toAccountNum + 
+				". Your current balance is "+toBalance+
+				". Transaction Id: " + TxnId);
+		System.out.println("Amount $" + fromAmount + " got credited to your account " + fromAccountNum + 
+				". Your current balance is "+ fromBalance
+				+ ". Transaction Id: " + TxnId);
 	}
 
 	///////////////////////////////////////////////////////////////////////////////////////////
-	// CREATE TABLE ChargeAndCommission (                                                    //
-	//     TxnNum varchar(255) not null foreign key references Transactions(TxnNum),         //
-	//     Amount varchar(255))                                                              //
+	//         CREATE TABLE ChargeAndCommission (                                            //
+	//             TxnNum varchar(255) not null foreign key references Transactions(TxnNum), //
+	//             Amount varchar(255))                                                      //
 	///////////////////////////////////////////////////////////////////////////////////////////
 	public static void insertChargeAndCommission(Connection conn, String txnId, double chargeAndCommissionAmount) {
 		String query = "insert into ChargeAndCommission values ('" + txnId + "', '" + chargeAndCommissionAmount + "')";

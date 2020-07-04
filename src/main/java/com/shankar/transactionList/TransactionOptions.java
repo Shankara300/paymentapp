@@ -145,6 +145,10 @@ public class TransactionOptions {
 
 			case 8:
 				enter = false;
+				break;
+
+			default:
+				break;
 			}
 		}
 
